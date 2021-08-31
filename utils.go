@@ -43,6 +43,8 @@ const (
 	// AV_ROUND_PASS_MINMAX = 8192
 )
 
+var AVERROR_EAGAIN = -int(syscall.EAGAIN)
+
 var (
 	AV_TIME_BASE   int        = C.AV_TIME_BASE
 	AV_TIME_BASE_Q AVRational = AVRational{1, C.int(AV_TIME_BASE)}

@@ -663,6 +663,64 @@ func (cc *CodecCtx) Decode2(pkt *Packet) (*Frame, int) {
 	return frame, 0
 }
 
+func (cc *CodecCtx) SendPacket(pkt *Packet) (bool, error) {
+	var ret int
+	if pkt == nil {
+		ret = int(C.avcodec_send_packet(cc.avCodecCtx, nil))
+	} else {
+		ret = int(C.avcodec_send_packet(cc.avCodecCtx, &pkt.avPacket))
+	}
+	if ret == 0 {
+		return false, nil
+	}
+	if ret == AVERROR_EAGAIN {
+		return true, nil
+	}
+	return false, AvError(ret)
+}
+
+func (cc *CodecCtx) ReceiveFrame() (*Frame, bool, error) {
+	frame := NewFrame()
+	ret := int(C.avcodec_receive_frame(cc.avCodecCtx, frame.avFrame))
+	if ret == 0 {
+		return frame, false, nil
+	}
+	frame.Free()
+	if ret == AVERROR_EAGAIN {
+		return nil, true, nil
+	}
+	return nil, false, AvError(ret)
+}
+
+func (cc *CodecCtx) SendFrame(frame *Frame) (bool, error) {
+	var ret int
+	if frame == nil {
+		ret = int(C.avcodec_send_frame(cc.avCodecCtx, nil))
+	} else {
+		ret = int(C.avcodec_send_frame(cc.avCodecCtx, frame.avFrame))
+	}
+	if ret == 0 {
+		return false, nil
+	}
+	if ret == AVERROR_EAGAIN {
+		return true, nil
+	}
+	return false, AvError(ret)
+}
+
+func (cc *CodecCtx) ReceivePacket() (*Packet, bool, error) {
+	pkt := NewPacket()
+	ret := int(C.avcodec_receive_packet(cc.avCodecCtx, &pkt.avPacket))
+	if ret == 0 {
+		return pkt, false, nil
+	}
+	pkt.Free()
+	if ret == AVERROR_EAGAIN {
+		return nil, true, nil
+	}
+	return nil, false, AvError(ret)
+}
+
 func (cc *CodecCtx) SelectSampleFmt() int32 {
 	return int32(C.gmf_select_sample_fmt(cc.codec.avCodec))
 }
