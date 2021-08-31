@@ -26,20 +26,37 @@ import (
 )
 
 type SwrCtx struct {
-	swrCtx   *C.struct_SwrContext
-	channels int
-	format   int32
+	swrCtx          *C.struct_SwrContext
+	outChannels     int
+	outSampleFormat int32
+	outSampleRate   int
+	inSampleRate    int
 }
 
-func NewSwrCtx(options []*Option, channels int, format int32) (*SwrCtx, error) {
+func NewSwrCtx(
+	outChannelLayout int,
+	outSampleFormat int32,
+	outSampleRate int,
+	inChannelLayout int,
+	inSampleFormat int32,
+	inSampleRate int,
+) (*SwrCtx, error) {
 	ctx := &SwrCtx{
-		swrCtx:   C.swr_alloc(),
-		channels: channels,
-		format:   format,
-	}
-
-	for _, option := range options {
-		option.Set(ctx.swrCtx)
+		swrCtx: C.swr_alloc_set_opts(
+			nil,
+			C.int64_t(outChannelLayout),
+			outSampleFormat,
+			C.int(outSampleRate),
+			C.int64_t(inChannelLayout),
+			inSampleFormat,
+			C.int(inSampleRate),
+			0,
+			nil,
+		),
+		outChannels:     int(C.av_get_channel_layout_nb_channels(C.uint64_t(outChannelLayout))),
+		outSampleFormat: outSampleFormat,
+		outSampleRate:   outSampleRate,
+		inSampleRate:    inSampleRate,
 	}
 
 	if ret := int(C.swr_init(ctx.swrCtx)); ret < 0 {
@@ -53,85 +70,20 @@ func (ctx *SwrCtx) Free() {
 	C.swr_free(&ctx.swrCtx)
 }
 
-func (ctx *SwrCtx) Convert(input *Frame) (*Frame, error) {
-	var (
-		dst *Frame
-		err error
-	)
+func (ctx *SwrCtx) Resample(input *Frame, outSamples int) (*Frame, error) {
+	inSamples := input.NbSamples()
+	// outSamples := int(C.av_rescale_rnd(C.swr_get_delay(ctx.swrCtx, C.longlong(ctx.inSampleRate))+C.longlong(inSamples), C.longlong(ctx.outSampleRate), C.longlong(ctx.inSampleRate), C.AV_ROUND_UP))
 
-	if dst, err = NewAudioFrame(ctx.format, ctx.channels, input.NbSamples()); err != nil {
+	out, err := NewAudioFrame(ctx.outSampleFormat, ctx.outChannels, outSamples)
+	if err != nil {
 		return nil, fmt.Errorf("error creating new audio frame - %s\n", err)
 	}
 
-	C.gmf_sw_resample(ctx.swrCtx, dst.avFrame, input.avFrame)
-
-	return dst, nil
-}
-
-func (ctx *SwrCtx) Flush(nbSamples int) (*Frame, error) {
-	var (
-		dst *Frame
-		err error
-	)
-
-	if dst, err = NewAudioFrame(ctx.format, ctx.channels, nbSamples); err != nil {
-		return nil, fmt.Errorf("error creating new audio frame - %s\n", err)
+	ret := int(C.swr_convert(ctx.swrCtx, (**C.uchar)(&out.avFrame.data[0]), C.int(outSamples), (**C.uchar)(&input.avFrame.data[0]), C.int(inSamples)))
+	if ret < 0 {
+		out.Free()
+		return nil, AvError(ret)
 	}
 
-	C.gmf_swr_flush(ctx.swrCtx, dst.avFrame)
-
-	return dst, nil
-}
-
-func DefaultResampler(ost *Stream, frames []*Frame, flush bool) []*Frame {
-	var (
-		result             []*Frame = make([]*Frame, 0)
-		winFrame, tmpFrame *Frame
-	)
-
-	if ost.SwrCtx == nil || ost.AvFifo == nil {
-		return frames
-	}
-
-	frameSize := ost.CodecCtx().FrameSize()
-
-	for i, _ := range frames {
-		ost.AvFifo.Write(frames[i])
-
-		for ost.AvFifo.SamplesToRead() >= frameSize {
-			winFrame = ost.AvFifo.Read(frameSize)
-			winFrame.SetChannelLayout(ost.CodecCtx().GetDefaultChannelLayout(ost.CodecCtx().Channels()))
-
-			tmpFrame, _ = ost.SwrCtx.Convert(winFrame)
-			if tmpFrame == nil || tmpFrame.IsNil() {
-				break
-			}
-
-			tmpFrame.SetPts(ost.Pts)
-			tmpFrame.SetPktDts(int(ost.Pts))
-
-			ost.Pts += int64(frameSize)
-
-			result = append(result, tmpFrame)
-		}
-	}
-
-	if flush {
-		if tmpFrame, _ = ost.SwrCtx.Flush(frameSize); tmpFrame != nil && !tmpFrame.IsNil() {
-			tmpFrame.SetPts(ost.Pts)
-			tmpFrame.SetPktDts(int(ost.Pts))
-
-			ost.Pts += int64(frameSize)
-
-			result = append(result, tmpFrame)
-		}
-	}
-
-	for i := 0; i < len(frames); i++ {
-		if frames[i] != nil {
-			frames[i].Free()
-		}
-	}
-
-	return result
+	return out, nil
 }
